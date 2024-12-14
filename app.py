@@ -7,7 +7,7 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 從環境變數取得LINE的Token與Secret
+# 請將下列環境變數於Render設定
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET', 'YOUR_CHANNEL_SECRET')
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', 'YOUR_CHANNEL_ACCESS_TOKEN')
 
@@ -15,8 +15,7 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 STATE_FILE = 'state.json'
-
-TARGET_NAME = "曾慶豪 Howard 🦊"  # 目標使用者顯示名稱
+TARGET_NAME = "曾慶豪 Howard 🦊"  # 目標使用者名稱
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -39,7 +38,7 @@ def line_profile(user_id):
     }
     r = requests.get(url, headers=headers)
     if r.status_code == 200:
-        return r.json()  # { "displayName": "...", "userId": "...", ...}
+        return r.json()  # { "displayName": "...", "userId": "..."}
     return None
 
 def push_message(user_id, text):
@@ -57,61 +56,105 @@ def line_webhook():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 當使用者發訊息給Bot時觸發此函式
     user_id = event.source.user_id
+    user_text = event.message.text.strip()
     state = load_state()
 
-    # 如果還沒有記錄目標userId，就嘗試取得用戶資訊
+    # 若尚未記錄userId，嘗試取得用戶資訊
     if state["userId"] is None:
         prof = line_profile(user_id)
         if prof and prof.get("displayName") == TARGET_NAME:
-            # 確認是目標用戶
             state["userId"] = user_id
             save_state(state)
-            push_message(user_id, "已記錄您的UserID，以後冷卻時間到會通知您。")
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="已記錄您的UserID，以後將針對您進行推播通知。")
+            )
+            return
+        else:
+            # 若不是目標用戶，可回應一則訊息表示無法提供服務
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="您不是目標使用者，無法進行冷卻通知服務。")
+            )
+            return
 
-    # 若非目標用戶或已經有userId，不特別處理
-    # 可回覆一則簡訊告知收到
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text="收到您的訊息！")
-    )
+    # 此時已經有userId且為目標用戶
+    # 處理指令: 狀態 / 使用 / 檢查 / help
+    if user_text.lower() in ["help", "指令"]:
+        reply = ("可用指令：\n"
+                 "『狀態』：顯示下一次可用時間\n"
+                 "『使用』：模擬使用一次O1，設定下一次可用時間=現+1小時\n"
+                 "『檢查』：檢查是否達到可用時間，如已達則通知冷卻結束\n"
+                 "『help』或『指令』：顯示此幫助訊息")
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply)
+        )
+        return
 
-@app.route("/update_usage", methods=["POST"])
-def update_usage():
-    # 用來更新下一次可用時間
-    # 假設計算邏輯：現在時間 + 1小時
-    # 可依你需求更換計算方式，例如根據當前已用次數與平均速率計算
-    state = load_state()
+    elif user_text == "狀態":
+        next_avail_str = state.get("next_available_time")
+        if next_avail_str is None:
+            reply = "目前尚未設定下一次可用時間。"
+        else:
+            next_avail = datetime.fromisoformat(next_avail_str)
+            reply = f"下一次可用時間：{next_avail.isoformat()} (UTC)，台灣時間：{next_avail.astimezone().isoformat()}"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply)
+        )
+        return
 
-    now = datetime.utcnow()
-    next_available = now + timedelta(hours=1)  # 理想下一次使用時間：現+1小時
-    state["next_available_time"] = next_available.isoformat()
-    save_state(state)
+    elif user_text == "使用":
+        # 設定下一次可用時間=現在+1小時(UTC)
+        now = datetime.utcnow()
+        next_avail = now + timedelta(hours=1)
+        state["next_available_time"] = next_avail.isoformat()
+        save_state(state)
+        reply = f"已設定下一次可用時間為：{next_avail.isoformat()} (UTC)"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply)
+        )
+        return
 
-    return jsonify({"status":"ok", "next_available_time": next_available.isoformat()}),200
-
-@app.route("/check_time", methods=["GET"])
-def check_time():
-    # 檢查是否已達下一次可用時間，如是且有userId則推播提醒
-    state = load_state()
-    user_id = state.get("userId")
-    next_avail_str = state.get("next_available_time")
-
-    if user_id and next_avail_str:
+    elif user_text == "檢查":
+        next_avail_str = state.get("next_available_time")
+        if next_avail_str is None:
+            reply = "尚未設定下一次可用時間，無法檢查。"
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=reply)
+            )
+            return
         next_avail = datetime.fromisoformat(next_avail_str)
         now = datetime.utcnow()
         if now >= next_avail:
-            # 時間已到，可推播提醒
-            push_message(user_id, "冷卻已結束，您現在可以使用下一次O1回應了！")
-            # 使用後可將 next_available_time 清除或保留給下次更新
+            # 時間已到
+            push_message(state["userId"], "冷卻已結束，您現在可以使用下一次O1回應了！")
             state["next_available_time"] = None
             save_state(state)
-            return jsonify({"status":"notified"}),200
+            reply = "已達可用時間並推播通知。"
         else:
-            return jsonify({"status":"waiting", "remaining_seconds": (next_avail - now).total_seconds()}),200
+            remain = (next_avail - now).total_seconds()
+            reply = f"尚未到達可用時間，還需等待約 {remain:.0f} 秒。"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply)
+        )
+        return
     else:
-        return jsonify({"status":"no_data"}),200
+        # 非已知指令
+        reply = "無法識別的指令。輸入 'help' 或 '指令' 查看可用命令。"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply)
+        )
+@app.route('/')
+def home():
+    return "OK", 200
 
 if __name__ == '__main__':
+    # 本地開發時使用
     app.run(host='0.0.0.0', port=5000)
