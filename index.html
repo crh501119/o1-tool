@@ -11,11 +11,16 @@
   label { display:inline-block; width:150px; margin-bottom:5px; }
   input[type="datetime-local"], input[type="number"], select { margin-bottom:10px; }
   .account-status { margin-bottom: 10px; }
-  .suggestion { background:#f0f8ff; padding:10px; margin-top:10px; border-radius:5px; }
+  .suggestion { background:#f0f8ff; padding:10px; margin-top:10px; border-radius:5px; white-space: pre-wrap; }
 </style>
 </head>
 <body>
 <h1>O1 策略輔助工具</h1>
+
+<div class="section">
+  <h2>即時策略</h2>
+  <div id="currentStrategy" class="suggestion"></div>
+</div>
 
 <div class="section">
   <h2>帳號狀態顯示</h2>
@@ -24,15 +29,13 @@
   <div>A-B週期差距：<span id="diff"></span>小時</div>
   
   <div class="suggestion" id="suggestionBox" style="display:none;">
-    <h3>策略建議</h3>
+    <h3>整週策略建議</h3>
     <p id="suggestionText"></p>
   </div>
 </div>
 
 <div class="section">
   <h2>事件輸入</h2>
-  <p>請在事件發生後輸入必要資訊，紀錄以更新週期模型。</p>
-  
   <label>帳號:</label>
   <select id="accountSelect">
     <option value="A">A</option>
@@ -72,7 +75,7 @@
 
 <div class="section">
   <h2>預估未來用量</h2>
-  <p>輸入你接下來在清醒時段預計使用多少次 O1，以獲得更精確的建議</p>
+  <p>輸入你接下來預計使用多少次 O1</p>
   <label>預估未來用量(次):</label>
   <input type="number" id="futureUsage" value="10">
   <button id="calcSuggestionBtn">計算建議</button>
@@ -87,8 +90,7 @@
 
 <script>
 const LS_KEY = 'o1_state';
-// 若有後端API，請填入後端Base URL，否則留空即可(只用localStorage)
-const API_BASE = ''; // 範例: 'https://your-render-service.onrender.com'
+const API_BASE = ''; // 若有後端部署在Render,填寫URL，例如 'https://your-app.onrender.com'
 
 function loadState() {
   let data = localStorage.getItem(LS_KEY);
@@ -96,7 +98,8 @@ function loadState() {
     data = {
       A: {start:null, next:null, used:0},
       B: {start:null, next:null, used:0},
-      history:[]
+      history:[],
+      futureUsage:10 // 儲存使用者上次的預估用量
     };
     localStorage.setItem(LS_KEY, JSON.stringify(data));
     return data;
@@ -108,7 +111,6 @@ function saveState(state) {
   localStorage.setItem(LS_KEY, JSON.stringify(state));
 }
 
-// 將狀態同步到後端 (若API_BASE有設定)
 async function pushStateToServer() {
   if(!API_BASE) return;
   const state = loadState();
@@ -119,7 +121,6 @@ async function pushStateToServer() {
   });
 }
 
-// 從後端拉取狀態 (若有後端)
 async function fetchStateFromServer() {
   if(!API_BASE) return;
   const res = await fetch(`${API_BASE}/state`);
@@ -127,6 +128,7 @@ async function fetchStateFromServer() {
   localStorage.setItem(LS_KEY, JSON.stringify(data));
   updateDisplay();
   updateEventHistoryDisplay();
+  updateCurrentStrategy();
 }
 
 function parseDateInput(val) {
@@ -162,7 +164,7 @@ function updateDisplay() {
     suggestionText.textContent = "兩帳號週期相差約84小時，非常理想！";
     suggestionBox.style.display = 'block';
   } else if(diffH) {
-    suggestionText.textContent = `目前兩帳號週期相差約${diffH.toFixed(1)}小時，可嘗試在下次刷新後調整首次使用時間以接近84小時。`;
+    suggestionText.textContent = `目前兩帳號週期相差約${diffH.toFixed(1)}小時，可嘗試在下次刷新後調整時間以接近84小時。`;
     suggestionBox.style.display = 'block';
   } else {
     suggestionBox.style.display = 'none';
@@ -199,7 +201,6 @@ function handleEvent(account, eventType, currentTime, nextRefresh) {
   
   if(!currentTime) return;
   
-  // 168小時 = 7天週期
   const CYCLE_HOURS = 168;
 
   switch(eventType) {
@@ -243,12 +244,14 @@ function handleEvent(account, eventType, currentTime, nextRefresh) {
       let nextT = new Date(currentTime.getTime() + CYCLE_HOURS*3600000);
       acc.next = nextT.toISOString();
       acc.used = 0;
+      // 可考慮在這裡觸發後端LINE通知(若使用後端)
       break;
   }
 
   saveState(state);
   addEventToHistory(account, eventType, currentTime, nextRefresh);
   updateDisplay();
+  updateCurrentStrategy();
   pushStateToServer();
 }
 
@@ -259,6 +262,7 @@ function recordUsage(account, count) {
   if(acc.used > 50) acc.used = 50;
   saveState(state);
   updateDisplay();
+  updateCurrentStrategy();
   pushStateToServer();
 }
 
@@ -274,7 +278,7 @@ function suggestUsageStrategy(futureUsage) {
   const diffH = aStart && bStart ? Math.abs(aStart - bStart)/3600000 : null;
   
   let result = "";
-  
+
   if (diffH !== null && Math.abs(diffH - 84) > 5) {
     result += `週期差距約${diffH.toFixed(1)}小時，建議下次刷新後調整首用時間以接近84小時。\n`;
   } else if (diffH !== null) {
@@ -292,6 +296,46 @@ function suggestUsageStrategy(futureUsage) {
   return result;
 }
 
+function updateCurrentStrategy() {
+  const state = loadState();
+  const aRemain = 50 - state.A.used;
+  const bRemain = 50 - state.B.used;
+  const currentBox = document.getElementById('currentStrategy');
+
+  let msg = "";
+
+  // 簡單邏輯：如果任一帳號有剩餘量 > 0，建議使用該帳號
+  if (aRemain > 0 || bRemain > 0) {
+    msg += "目前可用情況：\n";
+    if (aRemain > 0) msg += `A可用${aRemain}次\n`;
+    if (bRemain > 0) msg += `B可用${bRemain}次\n`;
+    msg += "可立即使用所需的O1次數。\n";
+  } else {
+    // 都沒剩，建議等待下次刷新
+    const aNext = state.A.next ? new Date(state.A.next) : null;
+    const bNext = state.B.next ? new Date(state.B.next) : null;
+
+    // 找出最近的刷新時間
+    let nextRefreshTimes = [];
+    if(aNext) nextRefreshTimes.push(aNext);
+    if(bNext) nextRefreshTimes.push(bNext);
+    if(nextRefreshTimes.length > 0) {
+      nextRefreshTimes.sort((a,b)=>a-b);
+      let nearest = nextRefreshTimes[0];
+      msg += `目前無可用次數，請等待下次刷新：${nearest.toLocaleString('zh-TW')}\n`;
+    } else {
+      msg += "目前狀態不明，無法得知何時刷新。\n";
+    }
+  }
+
+  // 若有上次futureUsage紀錄
+  const fu = state.futureUsage || 10;
+  msg += "\n根據上次預估未來用量("+fu+"次)：\n";
+  msg += suggestUsageStrategy(fu);
+
+  currentBox.textContent = msg;
+}
+
 document.getElementById('recordEventBtn').addEventListener('click',()=>{
   const account = document.getElementById('accountSelect').value;
   const eventType = document.getElementById('eventType').value;
@@ -307,14 +351,22 @@ document.getElementById('useBtn').addEventListener('click', ()=>{
 });
 
 document.getElementById('calcSuggestionBtn').addEventListener('click', ()=>{
-  const futureUsage = parseInt(document.getElementById('futureUsage').value,10);
+  const fu = parseInt(document.getElementById('futureUsage').value,10);
+  const state = loadState();
+  state.futureUsage = fu;
+  saveState(state);
   const detailBox = document.getElementById('detailedSuggestion');
-  detailBox.textContent = suggestUsageStrategy(futureUsage);
+  detailBox.textContent = suggestUsageStrategy(fu);
+  updateCurrentStrategy();
 });
 
+// 初始化顯示
 updateDisplay();
 updateEventHistoryDisplay();
-// 若要從後端載入狀態(如果有後端)，可在此呼叫 fetchStateFromServer();
+updateCurrentStrategy();
+// 若有後端:
+// fetchStateFromServer().then(()=>updateCurrentStrategy());
+
 </script>
 </body>
 </html>
