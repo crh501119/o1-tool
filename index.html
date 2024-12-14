@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>O1策略小工具</title>
+<title>O1 策略小工具</title>
 <style>
   body { font-family: sans-serif; margin: 20px; }
   .section { border:1px solid #ccc; padding:10px; margin-bottom:20px; }
   h2 { margin-top:0; }
-  label { display:inline-block; width:100px; }
-  input[type="datetime-local"] { width:200px; }
+  label { display:inline-block; width:150px; margin-bottom:5px; }
+  input[type="datetime-local"], input[type="number"], select { margin-bottom:10px; }
   .account-status { margin-bottom: 10px; }
   .suggestion { background:#f0f8ff; padding:10px; margin-top:10px; border-radius:5px; }
 </style>
@@ -31,29 +31,27 @@
 
 <div class="section">
   <h2>事件輸入</h2>
-  <p>透過下方表單紀錄事件（例：A 25次提醒、A用光、A刷新時間、B 5次提醒...）。<br/>
-     請在事件發生後，輸入系統給的下次刷新時間(若有)與當前時間，以更新週期模型。
-  </p>
+  <p>請在事件發生後輸入必要資訊，紀錄以更新週期模型。</p>
   
   <label>帳號:</label>
   <select id="accountSelect">
     <option value="A">A</option>
     <option value="B">B</option>
-  </select><br/><br/>
+  </select><br/>
   
   <label>事件類型:</label>
   <select id="eventType">
-    <option value="first_use">本週期第一次使用O1(重設週期起點)</option>
+    <option value="first_use">本週期第一次使用O1</option>
     <option value="25_remain">顯示剩25次提醒</option>
     <option value="5_remain">顯示剩5次提醒</option>
     <option value="used_up">用光50次</option>
-    <option value="refresh_shown">顯示刷新(剛刷新滿50次)</option>
-  </select><br/><br/>
+    <option value="refresh_shown">剛刷新(滿50次)</option>
+  </select><br/>
   
   <label>當前台灣時間:</label> 
-  <input type="datetime-local" id="currentTime"><br/><br/>
+  <input type="datetime-local" id="currentTime"><br/>
   
-  <label>下次刷新時間(若有提示):</label>
+  <label>下次刷新時間(若有):</label>
   <input type="datetime-local" id="nextRefresh"><br/><br/>
   
   <button id="recordEventBtn">紀錄事件</button>
@@ -61,7 +59,7 @@
 
 <div class="section">
   <h2>使用次數輸入</h2>
-  <p>記錄你剛剛用了多少次O1（手動輸入）：</p>
+  <p>記錄剛剛使用了多少次O1</p>
   <label>帳號:</label>
   <select id="accountUseSelect">
     <option value="A">A</option>
@@ -72,167 +70,251 @@
   <button id="useBtn">紀錄使用</button>
 </div>
 
+<div class="section">
+  <h2>預估未來用量</h2>
+  <p>輸入你接下來在清醒時段預計使用多少次 O1，以獲得更精確的建議</p>
+  <label>預估未來用量(次):</label>
+  <input type="number" id="futureUsage" value="10">
+  <button id="calcSuggestionBtn">計算建議</button>
+  
+  <div id="detailedSuggestion" style="margin-top:10px;"></div>
+</div>
+
+<div class="section">
+  <h2>歷史事件紀錄</h2>
+  <div id="eventHistory"></div>
+</div>
+
 <script>
-(function(){
-  // 資料結構：存放於 localStorage
-  // { A: {start: timestamp, next: timestamp, used: number}, B: {...} }
-  // start: 本週期首次使用O1的時間 (Date)
-  // next: 下次刷新時間 (Date)
-  // used: 已使用次數 (0~50)
-  
-  const LS_KEY = 'o1_state';
-  
-  function loadState() {
-    let data = localStorage.getItem(LS_KEY);
-    if(!data) {
-      // 初始化
-      data = {
-        A: {start:null, next:null, used:0},
-        B: {start:null, next:null, used:0}
-      };
-      localStorage.setItem(LS_KEY, JSON.stringify(data));
-      return data;
-    }
-    return JSON.parse(data);
-  }
-  
-  function saveState(state) {
-    localStorage.setItem(LS_KEY, JSON.stringify(state));
-  }
-  
-  function parseDateInput(val) {
-    return val ? new Date(val) : null;
-  }
-  
-  // 計算週期差距(小時)
-  function calcDiff(aStart, bStart) {
-    if(!aStart || !bStart) return null;
-    return Math.abs(aStart - bStart)/3600000; // 毫秒->小時
-  }
-  
-  function updateDisplay() {
-    const state = loadState();
-    const aStart = state.A.start ? new Date(state.A.start) : null;
-    const aNext = state.A.next ? new Date(state.A.next) : null;
-    const bStart = state.B.start ? new Date(state.B.start) : null;
-    const bNext = state.B.next ? new Date(state.B.next) : null;
-    
-    document.getElementById('aStart').textContent = aStart ? aStart.toLocaleString('zh-TW') : '未知';
-    document.getElementById('aNext').textContent = aNext ? aNext.toLocaleString('zh-TW') : '未知';
-    document.getElementById('aUsed').textContent = state.A.used;
-    
-    document.getElementById('bStart').textContent = bStart ? bStart.toLocaleString('zh-TW') : '未知';
-    document.getElementById('bNext').textContent = bNext ? bNext.toLocaleString('zh-TW') : '未知';
-    document.getElementById('bUsed').textContent = state.B.used;
-    
-    let diffH = calcDiff(aStart,bStart);
-    document.getElementById('diff').textContent = diffH !== null ? diffH.toFixed(1) : '無法計算';
+const LS_KEY = 'o1_state';
+// 若有後端API，請填入後端Base URL，否則留空即可(只用localStorage)
+const API_BASE = ''; // 範例: 'https://your-render-service.onrender.com'
 
-    // 策略建議：若A與B的diff已知且不為84，建議調整
-    const suggestionBox = document.getElementById('suggestionBox');
-    const suggestionText = document.getElementById('suggestionText');
-    if(diffH && Math.abs(diffH-84)<5) {
-      suggestionText.textContent = "兩帳號週期已相差約84小時，非常理想！請保持目前策略。";
-      suggestionBox.style.display = 'block';
-    } else if(diffH) {
-      suggestionText.textContent = `目前兩帳號週期相差約${diffH.toFixed(1)}小時，建議在下次刷新後延遲或提前首次使用O1的時間，以逐步接近84小時相差。`;
-      suggestionBox.style.display = 'block';
-    } else {
-      suggestionBox.style.display = 'none';
-    }
+function loadState() {
+  let data = localStorage.getItem(LS_KEY);
+  if(!data) {
+    data = {
+      A: {start:null, next:null, used:0},
+      B: {start:null, next:null, used:0},
+      history:[]
+    };
+    localStorage.setItem(LS_KEY, JSON.stringify(data));
+    return data;
   }
-  
-  // 根據事件類型更新週期資訊
-  function handleEvent(account, eventType, currentTime, nextRefresh) {
-    const state = loadState();
-    const acc = state[account];
-    
-    // currentTime必須存在以更新狀態
-    if(!currentTime) return;
-    
-    switch(eventType) {
-      case 'first_use':
-        // 第一次使用O1後，start = currentTime
-        // 一般來說nextRefresh要等之後才知，但若使用者提供了nextRefresh可以直接記下
-        acc.start = currentTime.toISOString();
-        if(nextRefresh) acc.next = nextRefresh.toISOString();
-        acc.used = 1; // 第一次使用
-        break;
-      case '25_remain':
-        // 已使用25次，若提供了nextRefresh，就可推算start = nextRefresh - 168小時
-        // 簡化處理：直接記下nextRefresh，反推start
-        if(nextRefresh) {
-          acc.next = nextRefresh.toISOString();
-          // start = nextRefresh - 168小時
-          let startTime = new Date(nextRefresh.getTime() - 168*3600000);
-          acc.start = startTime.toISOString();
-          acc.used = 25;
-        } else {
-          // 沒nextRefresh無法精確計算，只能更新used
-          acc.used = 25;
-        }
-        break;
-      case '5_remain':
-        // 已使用45次，同理處理
-        if(nextRefresh) {
-          acc.next = nextRefresh.toISOString();
-          let startTime = new Date(nextRefresh.getTime() - 168*3600000);
-          acc.start = startTime.toISOString();
-          acc.used = 45;
-        } else {
-          acc.used = 45;
-        }
-        break;
-      case 'used_up':
-        // 用光50次，如有nextRefresh可反推start
-        if(nextRefresh) {
-          acc.next = nextRefresh.toISOString();
-          let startTime = new Date(nextRefresh.getTime() - 168*3600000);
-          acc.start = startTime.toISOString();
-          acc.used = 50;
-        } else {
-          acc.used = 50;
-        }
-        break;
-      case 'refresh_shown':
-        // 剛刷新滿50次，起點等於currentTime
-        // 下次刷新 = currentTime+168小時
-        if(!currentTime) return;
-        acc.start = currentTime.toISOString();
-        let nextT = new Date(currentTime.getTime() + 168*3600000);
-        acc.next = nextT.toISOString();
-        acc.used = 0;
-        break;
-    }
-    saveState(state);
-    updateDisplay();
-  }
+  return JSON.parse(data);
+}
 
-  function recordUsage(account, count) {
-    const state = loadState();
-    const acc = state[account];
-    acc.used += count;
-    if(acc.used > 50) acc.used = 50; // 不可超過50
-    saveState(state);
-    updateDisplay();
-  }
+function saveState(state) {
+  localStorage.setItem(LS_KEY, JSON.stringify(state));
+}
 
-  document.getElementById('recordEventBtn').addEventListener('click',()=>{
-    const account = document.getElementById('accountSelect').value;
-    const eventType = document.getElementById('eventType').value;
-    const cTime = parseDateInput(document.getElementById('currentTime').value);
-    const nRefresh = parseDateInput(document.getElementById('nextRefresh').value);
-    handleEvent(account, eventType, cTime, nRefresh);
+// 將狀態同步到後端 (若API_BASE有設定)
+async function pushStateToServer() {
+  if(!API_BASE) return;
+  const state = loadState();
+  await fetch(`${API_BASE}/state`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(state)
   });
+}
 
-  document.getElementById('useBtn').addEventListener('click', ()=>{
-    const account = document.getElementById('accountUseSelect').value;
-    const count = parseInt(document.getElementById('useCount').value,10);
-    recordUsage(account, count);
-  });
-
+// 從後端拉取狀態 (若有後端)
+async function fetchStateFromServer() {
+  if(!API_BASE) return;
+  const res = await fetch(`${API_BASE}/state`);
+  const data = await res.json();
+  localStorage.setItem(LS_KEY, JSON.stringify(data));
   updateDisplay();
-})();
+  updateEventHistoryDisplay();
+}
+
+function parseDateInput(val) {
+  return val ? new Date(val) : null;
+}
+
+function calcDiff(aStart, bStart) {
+  if(!aStart || !bStart) return null;
+  return Math.abs(aStart - bStart)/3600000; 
+}
+
+function updateDisplay() {
+  const state = loadState();
+  const aStart = state.A.start ? new Date(state.A.start) : null;
+  const aNext = state.A.next ? new Date(state.A.next) : null;
+  const bStart = state.B.start ? new Date(state.B.start) : null;
+  const bNext = state.B.next ? new Date(state.B.next) : null;
+  
+  document.getElementById('aStart').textContent = aStart ? aStart.toLocaleString('zh-TW') : '未知';
+  document.getElementById('aNext').textContent = aNext ? aNext.toLocaleString('zh-TW') : '未知';
+  document.getElementById('aUsed').textContent = state.A.used;
+  
+  document.getElementById('bStart').textContent = bStart ? bStart.toLocaleString('zh-TW') : '未知';
+  document.getElementById('bNext').textContent = bNext ? bNext.toLocaleString('zh-TW') : '未知';
+  document.getElementById('bUsed').textContent = state.B.used;
+  
+  let diffH = calcDiff(aStart,bStart);
+  document.getElementById('diff').textContent = diffH !== null ? diffH.toFixed(1) : '無法計算';
+
+  const suggestionBox = document.getElementById('suggestionBox');
+  const suggestionText = document.getElementById('suggestionText');
+  if(diffH && Math.abs(diffH-84)<5) {
+    suggestionText.textContent = "兩帳號週期相差約84小時，非常理想！";
+    suggestionBox.style.display = 'block';
+  } else if(diffH) {
+    suggestionText.textContent = `目前兩帳號週期相差約${diffH.toFixed(1)}小時，可嘗試在下次刷新後調整首次使用時間以接近84小時。`;
+    suggestionBox.style.display = 'block';
+  } else {
+    suggestionBox.style.display = 'none';
+  }
+}
+
+function addEventToHistory(account, eventType, currentTime, nextRefresh) {
+  const state = loadState();
+  state.history = state.history || [];
+  state.history.push({
+    account: account,
+    eventType: eventType,
+    currentTime: currentTime ? currentTime.toISOString() : null,
+    nextRefresh: nextRefresh ? nextRefresh.toISOString() : null
+  });
+  saveState(state);
+  updateEventHistoryDisplay();
+}
+
+function updateEventHistoryDisplay() {
+  const state = loadState();
+  const historyDiv = document.getElementById('eventHistory');
+  historyDiv.innerHTML = "";
+  (state.history||[]).forEach(evt => {
+    const div = document.createElement('div');
+    div.textContent = `[${evt.currentTime}] 帳號${evt.account} 事件:${evt.eventType}${evt.nextRefresh?" 下次刷新:"+new Date(evt.nextRefresh).toLocaleString('zh-TW'):""}`;
+    historyDiv.appendChild(div);
+  });
+}
+
+function handleEvent(account, eventType, currentTime, nextRefresh) {
+  const state = loadState();
+  const acc = state[account];
+  
+  if(!currentTime) return;
+  
+  // 168小時 = 7天週期
+  const CYCLE_HOURS = 168;
+
+  switch(eventType) {
+    case 'first_use':
+      acc.start = currentTime.toISOString();
+      if(nextRefresh) acc.next = nextRefresh.toISOString();
+      acc.used = 1;
+      break;
+    case '25_remain':
+      if(nextRefresh) {
+        acc.next = nextRefresh.toISOString();
+        let startTime = new Date(nextRefresh.getTime() - CYCLE_HOURS*3600000);
+        acc.start = startTime.toISOString();
+        acc.used = 25;
+      } else {
+        acc.used = 25;
+      }
+      break;
+    case '5_remain':
+      if(nextRefresh) {
+        acc.next = nextRefresh.toISOString();
+        let startTime = new Date(nextRefresh.getTime() - CYCLE_HOURS*3600000);
+        acc.start = startTime.toISOString();
+        acc.used = 45;
+      } else {
+        acc.used = 45;
+      }
+      break;
+    case 'used_up':
+      if(nextRefresh) {
+        acc.next = nextRefresh.toISOString();
+        let startTime = new Date(nextRefresh.getTime() - CYCLE_HOURS*3600000);
+        acc.start = startTime.toISOString();
+        acc.used = 50;
+      } else {
+        acc.used = 50;
+      }
+      break;
+    case 'refresh_shown':
+      acc.start = currentTime.toISOString();
+      let nextT = new Date(currentTime.getTime() + CYCLE_HOURS*3600000);
+      acc.next = nextT.toISOString();
+      acc.used = 0;
+      break;
+  }
+
+  saveState(state);
+  addEventToHistory(account, eventType, currentTime, nextRefresh);
+  updateDisplay();
+  pushStateToServer();
+}
+
+function recordUsage(account, count) {
+  const state = loadState();
+  const acc = state[account];
+  acc.used += count;
+  if(acc.used > 50) acc.used = 50;
+  saveState(state);
+  updateDisplay();
+  pushStateToServer();
+}
+
+function suggestUsageStrategy(futureUsage) {
+  const state = loadState();
+  const aUsed = state.A.used;
+  const bUsed = state.B.used;
+  const aRemain = 50 - aUsed;
+  const bRemain = 50 - bUsed;
+  
+  const aStart = state.A.start ? new Date(state.A.start) : null;
+  const bStart = state.B.start ? new Date(state.B.start) : null;
+  const diffH = aStart && bStart ? Math.abs(aStart - bStart)/3600000 : null;
+  
+  let result = "";
+  
+  if (diffH !== null && Math.abs(diffH - 84) > 5) {
+    result += `週期差距約${diffH.toFixed(1)}小時，建議下次刷新後調整首用時間以接近84小時。\n`;
+  } else if (diffH !== null) {
+    result += `週期差距接近理想(約${diffH.toFixed(1)}小時)，可維持策略。\n`;
+  }
+
+  if (aRemain > bRemain) {
+    result += `A帳號剩餘較多(${aRemain}次)，可優先使用A帳號來滿足未來的${futureUsage}次需求。\n`;
+  } else if (bRemain > aRemain) {
+    result += `B帳號剩餘較多(${bRemain}次)，可優先使用B帳號來滿足未來的${futureUsage}次需求。\n`;
+  } else {
+    result += `A、B剩餘相近，可平均分配未來${futureUsage}次於A、B。\n`;
+  }
+
+  return result;
+}
+
+document.getElementById('recordEventBtn').addEventListener('click',()=>{
+  const account = document.getElementById('accountSelect').value;
+  const eventType = document.getElementById('eventType').value;
+  const cTime = parseDateInput(document.getElementById('currentTime').value);
+  const nRefresh = parseDateInput(document.getElementById('nextRefresh').value);
+  handleEvent(account, eventType, cTime, nRefresh);
+});
+
+document.getElementById('useBtn').addEventListener('click', ()=>{
+  const account = document.getElementById('accountUseSelect').value;
+  const count = parseInt(document.getElementById('useCount').value,10);
+  recordUsage(account, count);
+});
+
+document.getElementById('calcSuggestionBtn').addEventListener('click', ()=>{
+  const futureUsage = parseInt(document.getElementById('futureUsage').value,10);
+  const detailBox = document.getElementById('detailedSuggestion');
+  detailBox.textContent = suggestUsageStrategy(futureUsage);
+});
+
+updateDisplay();
+updateEventHistoryDisplay();
+// 若要從後端載入狀態(如果有後端)，可在此呼叫 fetchStateFromServer();
 </script>
 </body>
 </html>
